@@ -1,62 +1,43 @@
 # Inside
 
-Автономный конвейер разработки на основе Claude Code + Codex CLI и GitHub Projects.
+Автономный конвейер разработки с чётким разделением ролей.
 
 ---
 
-## Что это такое
+## Роли
 
-**Inside** — инфраструктура для автоматической разработки программного обеспечения, работающая параллельно с проектом Bravo на общей VPS:
-
-- **Perplexity** создаёт задачи в GitHub Issues с детальными спецификациями
-- **Три агента** на VPS выполняют задачи автоматически:
-  - `Coder` (Claude Code) — берёт задачу, реализует код, пушит в ветку
-  - `Reviewer` (Codex CLI) — проверяет код на соответствие спецификации
-  - `Tester` (Codex CLI) — тестирует, создаёт PR
-- Координация через **GitHub Projects v2** (канбан: Backlog → To Do → In Progress → Review → Testing → Done)
-- Агенты работают **непрерывно** как systemd-сервисы
+| Роль | Агент | Что делает |
+|------|-------|-----------|
+| **Аналитик** | Perplexity | Пишет BRD/спецификации → Backlog |
+| **Human** | Вы | Проверяет спеку → To Do |
+| **Кодер** | Claude Code | Реализует по BRD → Review |
+| **QA** | Codex CLI | Ревью + тесты + BRD-check → Done / To Do |
 
 ---
 
-## Архитектура
+## Поток
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GitHub Projects (канбан)                       │
-│                                                                   │
-│  Backlog ──► To Do ──► In Progress ──► Review ──► Testing ──► Done│
-│     │           │                                              │  │
-│  Perplexity   Human                                         Tester│
-│  создаёт      одобряет                                   создаёт PR│
-│                                                                   │
-└────────────────────────────┬──────────────────────────────────────┘
-                             │
-                    VPS (systemd)
-                    ├── inside-coder.service
-                    │     └─ coder-daemon.sh (Claude Code, опрос 5 мин)
-                    │         To Do → [claude --print] → Review
-                    │
-                    ├── inside-reviewer.service
-                    │     └─ reviewer-daemon.sh (Codex CLI, опрос 5 мин)
-                    │         Review → [codex exec] → Testing / In Progress
-                    │
-                    └── inside-tester.service
-                          └─ tester-daemon.sh (Codex CLI, опрос 5 мин)
-                              Testing → [codex exec] → Done / In Progress
+Perplexity ──► Backlog ──► Human одобряет ──► To Do
+                                                │
+                              Claude Code ◄─────┘
+                                   │
+                              In Progress
+                                   │
+                              Review (Codex QA)
+                               ╱         ╲
+                           PASS            FAIL
+                            │                │
+                          Done          To Do (повтор)
 ```
 
 ---
 
-## Изоляция от Bravo
+## Канбан-доска
 
-| Параметр | Bravo | Inside |
-|----------|-------|--------|
-| systemd-сервисы | `bravo-*` | `inside-*` |
-| Логи | `/var/log/bravo/` | `/var/log/inside/` |
-| GitHub Project | #1 | #3 |
-| Рабочая директория | `~/bravo/` | `~/inside/` |
+[Inside — Development Pipeline](https://github.com/users/ppxtestarena4/projects/3)
 
-Оба проекта используют одну VPS и одни инструменты, но не мешают друг другу.
+5 колонок: **Backlog** → **To Do** → **In Progress** → **Review** → **Done**
 
 ---
 
@@ -65,76 +46,70 @@
 ```bash
 ssh agent@164.68.116.250
 
-# Клонировать
 git clone https://github.com/ppxtestarena4/inside.git
 cd inside
 
-# Установить агентов
 sudo bash pipeline/install.sh
 ```
 
-Установщик:
-- Создаёт `/var/log/inside/`
-- Копирует systemd unit-файлы
-- Запрашивает `OPENAI_API_KEY`
-- Включает и запускает 3 сервиса
+Установщик запускает 2 сервиса:
+- `inside-coder` — Claude Code (берёт из To Do)
+- `inside-qa` — Codex CLI (берёт из Review)
 
 ---
 
 ## Как добавлять задачи
 
 1. Откройте [Issues](https://github.com/ppxtestarena4/inside/issues) → **New Issue**
-2. Выберите шаблон **«Задача Inside»**
-3. Заполните спецификацию (описание, файлы, критерии готовности)
-4. Добавьте issue в [GitHub Project](https://github.com/users/ppxtestarena4/projects/3) в колонку **Backlog**
-5. После проверки переведите в **To Do** — Coder подхватит автоматически
+2. Выберите шаблон **«BRD / Спецификация Inside»**
+3. Заполните BRD: описание, спецификацию, файлы, критерии приёмки
+4. Добавьте в [канбан](https://github.com/users/ppxtestarena4/projects/3) → **Backlog**
+5. Human проверяет и двигает в **To Do** → Claude подхватит
 
 ---
 
-## Мониторинг агентов
+## Мониторинг
 
 ```bash
-# Статус
-systemctl status inside-coder inside-reviewer inside-tester
+systemctl status inside-coder inside-qa
 
-# Логи
 journalctl -u inside-coder -f
-journalctl -u inside-reviewer -f
-journalctl -u inside-tester -f
+journalctl -u inside-qa -f
 
-# Управление
-systemctl restart inside-coder
-systemctl stop inside-coder inside-reviewer inside-tester
-systemctl start inside-coder inside-reviewer inside-tester
+# Остановить (не затронет Bravo)
+systemctl stop inside-coder inside-qa
 ```
 
 ---
 
-## Структура файлов
+## Изоляция от Bravo
+
+Оба проекта на одной VPS, но полностью изолированы:
+- Разные репозитории, разные GitHub Projects
+- Разные systemd-сервисы (`inside-*` vs `bravo-*`)
+- Разные логи (`/var/log/inside/` vs `/var/log/bravo/`)
+
+---
+
+## Структура
 
 ```
 inside/
 ├── pipeline/
-│   ├── common.sh           # Общие функции и конфигурация
-│   ├── coder-daemon.sh     # Агент-программист (Claude Code)
-│   ├── reviewer-daemon.sh  # Агент-ревьюер (Codex CLI)
-│   ├── tester-daemon.sh    # Агент-тестировщик (Codex CLI)
+│   ├── common.sh           # Конфигурация и общие функции
+│   ├── coder-daemon.sh     # Claude Code (кодер)
+│   ├── qa-daemon.sh        # Codex CLI (QA)
 │   └── install.sh          # Установщик
 ├── systemd/
 │   ├── inside-coder.service
-│   ├── inside-reviewer.service
-│   └── inside-tester.service
+│   └── inside-qa.service
 ├── .github/
-│   └── ISSUE_TEMPLATE/
-│       └── task.md         # Шаблон задачи
-├── src/                    # Код проекта
+│   ├── ISSUE_TEMPLATE/
+│   │   └── task.md         # BRD-шаблон
+│   └── workflows/
+│       └── codex-review.yml
+├── src/                    # Код
 ├── tests/                  # Тесты
-├── CODE.md                 # Архитектурная документация для агентов
+├── CODE.md                 # Память проекта для агентов
 └── README.md               # Этот файл
 ```
-
----
-
-## Лицензия
-
-MIT

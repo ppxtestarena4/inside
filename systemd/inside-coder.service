@@ -10,28 +10,23 @@ User=agent
 Group=agent
 WorkingDirectory=/home/agent/<repo>
 
-# Путь к скрипту агента
 ExecStart=/home/agent/<repo>/pipeline/coder-daemon.sh
 
 # Переменные окружения
-Environment=OPENAI_API_KEY=
 Environment=PIPELINE_REPO=ppxtestarena4/inside
 Environment=SLEEP_INTERVAL=300
 Environment=HOME=/home/agent
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/agent/.local/bin
 
-# Политика перезапуска
 Restart=always
 RestartSec=30
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
-# Вывод логов в systemd journal
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=inside-coder
 
-# Таймаут ожидания при остановке
 TimeoutStopSec=60
 
 [Install]

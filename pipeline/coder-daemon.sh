@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # coder-daemon.sh — Агент-программист (Coder) для проекта Inside
-# Берёт задачи из колонки "To Do", реализует код, пушит в Review.
-# Использует Claude Code для реализации.
-# Запускается через systemd (inside-coder.service).
+#
+# Роль: Claude Code
+# Берёт задачи из колонки "To Do" (одобренные Human)
+# Реализует код по BRD/спеке, пушит в ветку, передаёт в Review (Codex QA)
+#
+# Запускается через systemd (inside-coder.service)
 
 set -euo pipefail
 
@@ -18,7 +21,6 @@ source "${SCRIPT_DIR}/common.sh"
 # ---------------------------------------------------------------------------
 
 SLEEP_INTERVAL="${SLEEP_INTERVAL:-300}"   # 5 минут между итерациями
-MAX_RETRIES=3                              # Максимум попыток кодирования на задачу
 CLAUDE_TIMEOUT=1800                        # 30 минут максимум на claude
 
 # ---------------------------------------------------------------------------
@@ -38,10 +40,10 @@ process_task() {
     move_issue_to_status "${item_id}" "In Progress"
     log "Issue #${issue_number} → In Progress"
 
-    # 3. Получить спецификацию из тела issue
+    # 3. Получить BRD/спецификацию из тела issue
     local issue_spec
     issue_spec=$(get_issue_body "${issue_number}")
-    log "Спецификация получена (${#issue_spec} символов)"
+    log "BRD/спецификация получена (${#issue_spec} символов)"
 
     # 4. Создать/переключиться на feature-ветку
     local branch_name="feature/issue-${issue_number}"
@@ -64,7 +66,8 @@ process_task() {
     claude_prompt=$(cat <<PROMPT
 Ты — опытный разработчик проекта Inside. Прочитай файл CODE.md в этом репозитории для понимания проекта.
 
-Затем реализуй следующую задачу из GitHub Issue #${issue_number}:
+Затем реализуй следующую задачу из GitHub Issue #${issue_number}.
+Это BRD (Business Requirements Document) / спецификация, написанная аналитиком:
 
 ${issue_spec}
 
@@ -72,23 +75,24 @@ ${issue_spec}
 - Создай или измени все файлы, указанные в спецификации
 - Следуй архитектуре, описанной в CODE.md
 - Пиши чистый, хорошо документированный код
-- Убедись, что все критерии готовности из issue выполнены
+- Убедись, что все критерии приёмки из BRD выполнены
 - Не создавай лишних файлов, не предусмотренных спецификацией
+- Если есть тесты — убедись, что они проходят
 PROMPT
 )
 
-    log "Запускаем claude для issue #${issue_number}..."
+    log "Запускаем Claude Code для issue #${issue_number}..."
 
     local claude_exit=0
     timeout "${CLAUDE_TIMEOUT}" claude --print "${claude_prompt}" || claude_exit=$?
 
     if [[ ${claude_exit} -eq 124 ]]; then
-        log "ERROR: claude превысил таймаут (${CLAUDE_TIMEOUT}s) для issue #${issue_number}"
+        log "ERROR: Claude превысил таймаут (${CLAUDE_TIMEOUT}s) для issue #${issue_number}"
         comment_on_issue "${issue_number}" "❌ **Coder (Claude)**: превышен таймаут выполнения (30 мин). Задача остаётся в In Progress."
         unassign_issue "${issue_number}"
         return 1
     elif [[ ${claude_exit} -ne 0 ]]; then
-        log "ERROR: claude завершился с кодом ${claude_exit} для issue #${issue_number}"
+        log "ERROR: Claude завершился с кодом ${claude_exit} для issue #${issue_number}"
         comment_on_issue "${issue_number}" "❌ **Coder (Claude)**: ошибка выполнения (exit ${claude_exit}). Задача остаётся в In Progress."
         unassign_issue "${issue_number}"
         return 1
@@ -115,8 +119,8 @@ PROMPT
     commit_msg=$(cat <<MSG
 feat: implement issue #${issue_number}
 
-Implements specification from GitHub Issue #${issue_number}.
-Auto-implemented by Coder agent (Claude Code) for project Inside.
+Implements BRD from GitHub Issue #${issue_number}.
+Auto-implemented by Claude Code (inside-coder).
 
 Refs: #${issue_number}
 MSG
@@ -126,7 +130,7 @@ MSG
     git push origin "${branch_name}"
     log "Изменения запушены в ${branch_name}"
 
-    # 8. Переместить в Review
+    # 8. Переместить в Review → Codex QA подхватит
     move_issue_to_status "${item_id}" "Review"
     log "Issue #${issue_number} → Review"
 
@@ -138,9 +142,9 @@ MSG
 **Изменённые файлы:**
 ${changed_files}
 
-Задача перемещена в **Review** для проверки."
+Задача передана в **Review** → Codex QA."
 
-    log "=== Issue #${issue_number} успешно обработан и передан в Review ==="
+    log "=== Issue #${issue_number} обработан → Review ==="
 }
 
 # ---------------------------------------------------------------------------
@@ -150,14 +154,14 @@ ${changed_files}
 main() {
     check_dependencies
     log "============================================"
-    log "Inside Coder Daemon запущен. Репозиторий: ${PIPELINE_REPO}"
+    log "Inside Coder (Claude Code) запущен"
+    log "Репозиторий: ${PIPELINE_REPO}"
     log "Интервал опроса: ${SLEEP_INTERVAL}s"
     log "============================================"
 
     while true; do
         log "--- Новая итерация ---"
 
-        # Найти первую незанятую задачу в "To Do"
         local task_line=""
         task_line=$(get_first_unassigned_item_by_status "To Do" 2>/dev/null || true)
 
@@ -170,7 +174,6 @@ main() {
 
             log "Найдена задача: issue #${issue_number} (item: ${item_id})"
 
-            # Обработать задачу с защитой от ошибок
             if ! process_task "${item_id}" "${issue_number}"; then
                 log "ERROR: Обработка issue #${issue_number} завершилась с ошибкой. Продолжаем цикл."
             fi
