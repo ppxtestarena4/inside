@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# common.sh — Общие функции для всех daemon-агентов конвейера Inside
+# Используется: source common.sh
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Конфигурация — INSIDE
+# ---------------------------------------------------------------------------
+
+# Репозиторий (переопределяется через env)
+PIPELINE_REPO="${PIPELINE_REPO:-ppxtestarena4/inside}"
+
+# GitHub Projects — идентификаторы (Inside Project #3)
+PROJECT_ID="PVT_kwHOD_OjOs4BTTC0"
+STATUS_FIELD_ID="PVTSSF_lAHOD_OjOs4BTTC0zhAlFI0"
+
+# ID колонок (option IDs в GitHub Projects v2) — Inside
+declare -A COLUMN_IDS=(
+    ["Backlog"]="5f7f9b84"
+    ["To Do"]="e04d9225"
+    ["In Progress"]="00ab94fc"
+    ["Review"]="339101c2"
+    ["Testing"]="549f9e5a"
+    ["Done"]="8a4c63f1"
+)
+
+# Директория логов — отдельная от Bravo
+LOG_DIR="/var/log/inside"
+
+# ---------------------------------------------------------------------------
+# Логирование
+# ---------------------------------------------------------------------------
+
+# log <message> — пишет сообщение в лог-файл с временной меткой
+log() {
+    local message="$1"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local caller="${DAEMON_NAME:-common}"
+    local log_file="${LOG_DIR}/${caller}.log"
+
+    mkdir -p "${LOG_DIR}"
+    echo "[${timestamp}] [${caller}] ${message}" | tee -a "${log_file}"
+}
+
+# ---------------------------------------------------------------------------
+# GraphQL-утилиты
+# ---------------------------------------------------------------------------
+
+# _graphql <query> — выполняет GraphQL-запрос через gh api graphql
+_graphql() {
+    local query="$1"
+    gh api graphql -f query="${query}"
+}
+
+# ---------------------------------------------------------------------------
+# Работа с issue в GitHub Projects
+# ---------------------------------------------------------------------------
+
+# get_project_items_by_status <status_name>
+# Возвращает список item ID + issue number для заданной колонки
+get_project_items_by_status() {
+    local status_name="$1"
+    local column_id="${COLUMN_IDS[${status_name}]:-}"
+
+    if [[ -z "${column_id}" ]]; then
+        log "ERROR: Неизвестный статус: ${status_name}"
+        return 1
+    fi
+
+    local query
+    query=$(cat <<GRAPHQL
+{
+  node(id: "${PROJECT_ID}") {
+    ... on ProjectV2 {
+      items(first: 50) {
+        nodes {
+          id
+          fieldValues(first: 20) {
+            nodes {
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                optionId
+                field {
+                  ... on ProjectV2FieldCommon {
+                    id
+                  }
+                }
+              }
+            }
+          }
+          content {
+            ... on Issue {
+              number
+              assignees(first: 5) {
+                nodes {
+                  login
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+GRAPHQL
+)
+
+    gh api graphql -f query="${query}" \
+        --jq ".data.node.items.nodes[] |
+              select(.fieldValues.nodes[] |
+                select(.field.id == \"${STATUS_FIELD_ID}\" and .optionId == \"${column_id}\")
+              ) |
+              \"\(.id) \(.content.number)\""
+}
+
+# get_first_unassigned_item_by_status <status_name>
+# Возвращает первую незанятую задачу: "ITEM_ID ISSUE_NUMBER"
+get_first_unassigned_item_by_status() {
+    local status_name="$1"
+    local column_id="${COLUMN_IDS[${status_name}]:-}"
+
+    if [[ -z "${column_id}" ]]; then
+        log "ERROR: Неизвестный статус: ${status_name}"
+        return 1
+    fi
+
+    local query
+    query=$(cat <<GRAPHQL
+{
+  node(id: "${PROJECT_ID}") {
+    ... on ProjectV2 {
+      items(first: 50) {
+        nodes {
+          id
+          fieldValues(first: 20) {
+            nodes {
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                optionId
+                field {
+                  ... on ProjectV2FieldCommon {
+                    id
+                  }
+                }
+              }
+            }
+          }
+          content {
+            ... on Issue {
+              number
+              assignees(first: 5) {
+                nodes {
+                  login
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+GRAPHQL
+)
+
+    gh api graphql -f query="${query}" \
+        --jq ".data.node.items.nodes[] |
+              select(.fieldValues.nodes[] |
+                select(.field.id == \"${STATUS_FIELD_ID}\" and .optionId == \"${column_id}\")
+              ) |
+              select(.content.assignees.nodes | length == 0) |
+              \"\(.id) \(.content.number)\"" \
+        | head -n 1
+}
+
+# move_issue_to_status <item_id> <status_name>
+# Перемещает item проекта в указанную колонку
+move_issue_to_status() {
+    local item_id="$1"
+    local status_name="$2"
+    local column_id="${COLUMN_IDS[${status_name}]:-}"
+
+    if [[ -z "${column_id}" ]]; then
+        log "ERROR: Неизвестный статус: ${status_name}"
+        return 1
+    fi
+
+    local mutation
+    mutation=$(cat <<GRAPHQL
+mutation {
+  updateProjectV2ItemFieldValue(input: {
+    projectId: "${PROJECT_ID}"
+    itemId: "${item_id}"
+    fieldId: "${STATUS_FIELD_ID}"
+    value: { singleSelectOptionId: "${column_id}" }
+  }) {
+    projectV2Item {
+      id
+    }
+  }
+}
+GRAPHQL
+)
+
+    gh api graphql -f query="${mutation}" > /dev/null
+    log "Задача ${item_id} перемещена в '${status_name}'"
+}
+
+# ---------------------------------------------------------------------------
+# Работа с issue через REST API
+# ---------------------------------------------------------------------------
+
+# get_issue_body <issue_number>
+get_issue_body() {
+    local issue_number="$1"
+    gh api "repos/${PIPELINE_REPO}/issues/${issue_number}" \
+        --jq '"# " + .title + "\n\n" + .body'
+}
+
+# assign_issue <issue_number>
+assign_issue() {
+    local issue_number="$1"
+    local current_user
+    current_user=$(gh api user --jq '.login')
+
+    gh api "repos/${PIPELINE_REPO}/issues/${issue_number}" \
+        --method PATCH \
+        --field "assignees[]=${current_user}" \
+        > /dev/null
+
+    log "Issue #${issue_number} назначено пользователю ${current_user}"
+}
+
+# comment_on_issue <issue_number> <body>
+comment_on_issue() {
+    local issue_number="$1"
+    local body="$2"
+
+    gh api "repos/${PIPELINE_REPO}/issues/${issue_number}/comments" \
+        --method POST \
+        --field "body=${body}" \
+        > /dev/null
+
+    log "Комментарий к issue #${issue_number} опубликован"
+}
+
+# unassign_issue <issue_number>
+unassign_issue() {
+    local issue_number="$1"
+    gh api "repos/${PIPELINE_REPO}/issues/${issue_number}" \
+        --method PATCH \
+        --field "assignees[]=" \
+        > /dev/null 2>&1 || true
+
+    log "Назначение с issue #${issue_number} снято"
+}
+
+# ---------------------------------------------------------------------------
+# Вспомогательные функции Git
+# ---------------------------------------------------------------------------
+
+# ensure_branch <branch_name>
+ensure_branch() {
+    local branch_name="$1"
+
+    git fetch origin main --quiet
+
+    if git ls-remote --exit-code --heads origin "${branch_name}" > /dev/null 2>&1; then
+        git checkout "${branch_name}" --quiet
+        git pull origin "${branch_name}" --quiet
+    else
+        git checkout -b "${branch_name}" origin/main --quiet
+    fi
+
+    log "Переключились на ветку ${branch_name}"
+}
+
+# ---------------------------------------------------------------------------
+# Проверка зависимостей
+# ---------------------------------------------------------------------------
+
+check_dependencies() {
+    local deps=("gh" "git" "codex")
+    local missing=()
+
+    for dep in "${deps[@]}"; do
+        if ! command -v "${dep}" &> /dev/null; then
+            missing+=("${dep}")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log "ERROR: Отсутствуют зависимости: ${missing[*]}"
+        exit 1
+    fi
+}
