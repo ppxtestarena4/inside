@@ -1,8 +1,9 @@
 [Unit]
-Description=Inside Pipeline — QA Agent (Codex CLI: Review + Test + BRD check)
+Description=Inside Pipeline — Tester Agent
 Documentation=https://github.com/ppxtestarena4/inside
 After=network-online.target
 Wants=network-online.target
+# Запускаться после сетевого соединения
 
 [Service]
 Type=simple
@@ -10,7 +11,8 @@ User=agent
 Group=agent
 WorkingDirectory=/home/agent/<repo>
 
-ExecStart=/home/agent/<repo>/pipeline/qa-daemon.sh
+# Путь к скрипту агента
+ExecStart=/home/agent/<repo>/pipeline/tester-daemon.sh
 
 # Переменные окружения
 Environment=OPENAI_API_KEY=
@@ -19,15 +21,18 @@ Environment=SLEEP_INTERVAL=300
 Environment=HOME=/home/agent
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/agent/.local/bin
 
+# Политика перезапуска
 Restart=always
 RestartSec=30
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
+# Вывод логов в systemd journal
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=inside-qa
+SyslogIdentifier=inside-tester
 
+# Таймаут ожидания при остановке
 TimeoutStopSec=60
 
 [Install]

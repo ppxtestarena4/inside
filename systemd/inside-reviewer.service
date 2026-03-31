@@ -1,5 +1,5 @@
 [Unit]
-Description=Inside Pipeline — Coder Agent
+Description=Inside Pipeline — Reviewer Agent
 Documentation=https://github.com/ppxtestarena4/inside
 After=network-online.target
 Wants=network-online.target
@@ -12,7 +12,7 @@ Group=agent
 WorkingDirectory=/home/agent/<repo>
 
 # Путь к скрипту агента
-ExecStart=/home/agent/<repo>/pipeline/coder-daemon.sh
+ExecStart=/home/agent/<repo>/pipeline/reviewer-daemon.sh
 
 # Переменные окружения
 Environment=OPENAI_API_KEY=
@@ -30,7 +30,7 @@ StartLimitBurst=5
 # Вывод логов в systemd journal
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=inside-coder
+SyslogIdentifier=inside-reviewer
 
 # Таймаут ожидания при остановке
 TimeoutStopSec=60

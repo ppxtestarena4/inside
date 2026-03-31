@@ -5,44 +5,34 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Конфигурация — INSIDE
+# Конфигурация
 # ---------------------------------------------------------------------------
 
 # Репозиторий (переопределяется через env)
 PIPELINE_REPO="${PIPELINE_REPO:-ppxtestarena4/inside}"
 
-# GitHub Projects — идентификаторы (Inside Project #3)
+# GitHub Projects — идентификаторы
 PROJECT_ID="PVT_kwHOD_OjOs4BTTC0"
 STATUS_FIELD_ID="PVTSSF_lAHOD_OjOs4BTTC0zhAlFI0"
 
-# ID колонок (option IDs в GitHub Projects v2) — Inside
-# 5 колонок: Backlog → To Do → In Progress → Review → Done
+# ID колонок (option IDs в GitHub Projects v2)
 declare -A COLUMN_IDS=(
-    ["Backlog"]="4b9b609c"
-    ["To Do"]="2d1e5790"
-    ["In Progress"]="e475860c"
-    ["Review"]="413316c3"
-    ["Done"]="537bf78f"
+    ["Backlog"]="f1d1f398"
+    ["To Do"]="5a8139d3"
+    ["In Progress"]="70b72213"
+    ["Review"]="2a164a07"
+    ["Testing"]="ba6f8676"
+    ["Done"]="6160c84d"
 )
 
-# Директория логов — отдельная от Bravo
+# Директория логов
 LOG_DIR="/var/log/inside"
-
-# ---------------------------------------------------------------------------
-# Роли конвейера Inside
-# ---------------------------------------------------------------------------
-#
-#   Perplexity (аналитик)  → создаёт BRD/спеку → Backlog
-#   Human (вы)             → проверяет спеку    → To Do
-#   Claude Code (кодер)    → берёт из To Do     → In Progress → Review
-#   Codex CLI (QA)         → берёт из Review    → Done / To Do (при FAIL)
-#
-# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Логирование
 # ---------------------------------------------------------------------------
 
+# log <message> — пишет сообщение в лог-файл с временной меткой
 log() {
     local message="$1"
     local timestamp
@@ -58,6 +48,7 @@ log() {
 # GraphQL-утилиты
 # ---------------------------------------------------------------------------
 
+# _graphql <query> — выполняет GraphQL-запрос через gh api graphql
 _graphql() {
     local query="$1"
     gh api graphql -f query="${query}"
@@ -68,6 +59,7 @@ _graphql() {
 # ---------------------------------------------------------------------------
 
 # get_project_items_by_status <status_name>
+# Возвращает список item ID + issue number для заданной колонки (по одному в строке: "ITEM_ID ISSUE_NUMBER")
 get_project_items_by_status() {
     local status_name="$1"
     local column_id="${COLUMN_IDS[${status_name}]:-}"
@@ -124,6 +116,7 @@ GRAPHQL
 }
 
 # get_first_unassigned_item_by_status <status_name>
+# Возвращает первую незанятую задачу: "ITEM_ID ISSUE_NUMBER"
 get_first_unassigned_item_by_status() {
     local status_name="$1"
     local column_id="${COLUMN_IDS[${status_name}]:-}"
@@ -182,6 +175,7 @@ GRAPHQL
 }
 
 # move_issue_to_status <item_id> <status_name>
+# Перемещает item проекта в указанную колонку
 move_issue_to_status() {
     local item_id="$1"
     local status_name="$2"
@@ -217,12 +211,16 @@ GRAPHQL
 # Работа с issue через REST API
 # ---------------------------------------------------------------------------
 
+# get_issue_body <issue_number>
+# Возвращает заголовок и тело issue
 get_issue_body() {
     local issue_number="$1"
     gh api "repos/${PIPELINE_REPO}/issues/${issue_number}" \
         --jq '"# " + .title + "\n\n" + .body'
 }
 
+# assign_issue <issue_number>
+# Назначает issue текущему пользователю gh (агенту)
 assign_issue() {
     local issue_number="$1"
     local current_user
@@ -236,6 +234,8 @@ assign_issue() {
     log "Issue #${issue_number} назначено пользователю ${current_user}"
 }
 
+# comment_on_issue <issue_number> <body>
+# Публикует комментарий к issue
 comment_on_issue() {
     local issue_number="$1"
     local body="$2"
@@ -248,6 +248,8 @@ comment_on_issue() {
     log "Комментарий к issue #${issue_number} опубликован"
 }
 
+# unassign_issue <issue_number>
+# Снимает назначение с issue (при ошибке или возврате)
 unassign_issue() {
     local issue_number="$1"
     gh api "repos/${PIPELINE_REPO}/issues/${issue_number}" \
@@ -262,6 +264,8 @@ unassign_issue() {
 # Вспомогательные функции Git
 # ---------------------------------------------------------------------------
 
+# ensure_branch <branch_name>
+# Создаёт ветку от main или переключается на неё, если уже существует
 ensure_branch() {
     local branch_name="$1"
 
@@ -282,7 +286,7 @@ ensure_branch() {
 # ---------------------------------------------------------------------------
 
 check_dependencies() {
-    local deps=("gh" "git")
+    local deps=("gh" "git" "codex")
     local missing=()
 
     for dep in "${deps[@]}"; do

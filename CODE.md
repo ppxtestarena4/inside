@@ -1,55 +1,19 @@
-# CODE.md — Память проекта Inside
+# CODE.md — Память проекта inside
 
-> Этот файл читается агентами (Claude Code, Codex CLI) перед выполнением задач.
+> Этот файл читается Codex-агентами перед выполнением задач.
 > Обновляй его при изменении архитектуры или структуры проекта.
 
 ---
 
 ## Описание проекта
 
-**Inside** — автономный конвейер разработки с чётким разделением ролей.
+**inside** — универсальный шаблон автономного конвейера разработки на основе трёх Codex-агентов.
 
----
-
-## Поток работы
-
-```
-Perplexity (аналитик)     → пишет BRD/спеку           → Backlog
-Human (вы)                → проверяет и одобряет       → To Do
-Claude Code (кодер)       → реализует по BRD           → Review
-Codex CLI (QA)            → ревью + тесты + BRD-check  → Done / To Do
-```
-
-### Правила
-
-- **Perplexity** — только аналитик. Пишет BRD и спецификации, создаёт issues.
-- **Human** — проверяет спеку, при одобрении двигает Backlog → To Do.
-- **Claude Code** — берёт из To Do, кодирует, пушит в ветку, двигает в Review.
-- **Codex CLI** — единый QA-агент: code review + тестирование + проверка соответствия BRD.
-  - PASS → Done + Pull Request
-  - FAIL → возврат в To Do с комментарием (Claude подхватит снова)
-
----
-
-## Канбан-доска
-
-| Колонка | ID | Кто управляет | Действие |
-|---------|-----|---------------|---------|
-| **Backlog** | `4b9b609c` | Perplexity | Создаёт BRD/спеку, ждёт одобрения |
-| **To Do** | `2d1e5790` | Human → Claude | Human одобряет; Claude берёт задачу |
-| **In Progress** | `e475860c` | Claude Code | Активная разработка |
-| **Review** | `413316c3` | Codex QA | Ревью + тесты + проверка BRD |
-| **Done** | `537bf78f` | Human | Merge PR, финальная проверка |
-
----
-
-## Ролевая матрица
-
-| Роль | Агент | Инструмент | Берёт из | Двигает в | Gate |
-|------|-------|-----------|----------|-----------|------|
-| **Аналитик** | Perplexity | — | — | Backlog | BRD написан по шаблону |
-| **Кодер** | Claude Code | `claude --print` | To Do | Review | Файлы изменены (`git status`) |
-| **QA** | Codex CLI | `codex exec --full-auto` | Review | Done / To Do | VERDICT: PASS/FAIL |
+Используется для любого проекта, которому нужна автоматизированная разработка:
+- Perplexity (или человек) создаёт задачи в виде GitHub Issues с детальной спецификацией
+- Три Codex-агента (`Coder`, `Reviewer`, `Tester`) выполняют, проверяют и тестируют задачи автоматически
+- Вся координация происходит через GitHub Projects (канбан-доска)
+- Агенты работают в бесконечном цикле на VPS через systemd
 
 ---
 
@@ -59,12 +23,93 @@ Codex CLI (QA)            → ревью + тесты + BRD-check  → Done / To
 |-----------|-----------|
 | Координация задач | GitHub Projects v2 (GraphQL API) |
 | Управление кодом | Git + GitHub |
-| Кодирование | Claude Code (`claude --print`) |
-| QA (ревью + тесты) | Codex CLI (`codex exec --full-auto`) |
-| Автозапуск | systemd: `inside-coder` + `inside-qa` |
+| Исполнение агентов | Codex CLI (`codex exec --full-auto`) |
+| Автозапуск | systemd unit-файлы |
 | API интеграция | `gh` CLI (GitHub CLI) |
 | Логирование | `/var/log/inside/` + systemd journal |
 | VPS | Contabo (164.68.116.250), пользователь: agent |
+
+---
+
+## Диаграмма конвейера (ASCII)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      GitHub Projects (канбан)                        │
+│                                                                       │
+│  Backlog → To Do → In Progress → Review → Testing → Done            │
+│     │         │          │           │        │        │             │
+│     │         │          │           │        │        │             │
+│  Perplexity  Human    Coder       Reviewer  Tester   Human          │
+│  (создаёт)  (одобр.) (кодирует)  (ревьюит) (тестир.) (закрывает)   │
+└─────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+    VPS Contabo (164.68.116.250)
+    ├── systemd: inside-coder.service    → pipeline/coder-daemon.sh
+    ├── systemd: inside-reviewer.service → pipeline/reviewer-daemon.sh
+    └── systemd: inside-tester.service  → pipeline/tester-daemon.sh
+         │
+         ▼
+    Каждый агент:
+    while true; do
+        задача = найти_в_своей_колонке()
+        if задача:
+            обработать(задача)
+            переместить_в_следующую_колонку()
+        sleep 300
+    done
+```
+
+---
+
+## Описание колонок канбана
+
+| Колонка | ID | Кто управляет | Действие |
+|---------|-----|---------------|---------|
+| **Backlog** | `f1d1f398` | Perplexity | Создаёт issue, ждёт одобрения |
+| **To Do** | `5a8139d3` | Human | Одобрил задачу → Coder берёт |
+| **In Progress** | `70b72213` | Coder | Активная разработка |
+| **Review** | `2a164a07` | Reviewer | Code review + проверка спеки |
+| **Testing** | `ba6f8676` | Tester | Спека-чеклист + тесты |
+| **Done** | `6160c84d` | Human | Финальная проверка, закрытие |
+
+---
+
+## Ролевая матрица агентов
+
+| Роль | Daemon | Берёт из | Двигает в | Gate |
+|------|--------|----------|-----------|------|
+| **Coder** | `coder-daemon.sh` | To Do | Review | Файлы изменены (`git status`) |
+| **Reviewer** | `reviewer-daemon.sh` | Review | Testing / In Progress | Codex PASS |
+| **Tester** | `tester-daemon.sh` | Testing | Done / In Progress | Codex PASS + тесты |
+
+---
+
+## Структура репозитория
+
+```
+inside/
+├── .github/
+│   ├── workflows/
+│   │   └── ci.yml                  # Базовый CI (lint, test)
+│   └── ISSUE_TEMPLATE/
+│       └── task.md                 # Шаблон issue для задач
+├── pipeline/
+│   ├── common.sh                   # Общие функции: GraphQL API, логирование
+│   ├── coder-daemon.sh             # Агент-программист (бесконечный цикл)
+│   ├── reviewer-daemon.sh          # Агент-ревьюер (бесконечный цикл)
+│   ├── tester-daemon.sh            # Агент-тестировщик (бесконечный цикл)
+│   └── install.sh                  # Установщик на VPS
+├── systemd/
+│   ├── inside-coder.service         # Systemd unit для Coder
+│   ├── inside-reviewer.service      # Systemd unit для Reviewer
+│   └── inside-tester.service        # Systemd unit для Tester
+├── src/                            # Исходный код продукта (заполняется агентами)
+├── tests/                          # Тесты (заполняется агентами)
+├── CODE.md                         # ← Этот файл (память проекта)
+└── README.md                       # Пользовательская документация
+```
 
 ---
 
@@ -74,80 +119,114 @@ Codex CLI (QA)            → ревью + тесты + BRD-check  → Done / To
 Project ID:     PVT_kwHOD_OjOs4BTTC0
 Status Field:   PVTSSF_lAHOD_OjOs4BTTC0zhAlFI0
 Repo:           ppxtestarena4/inside
-Project URL:    https://github.com/users/ppxtestarena4/projects/3
 ```
+
+Все ID задаются в `pipeline/common.sh` в массиве `COLUMN_IDS`.
 
 ---
 
-## Изоляция от Bravo
-
-| Параметр | Bravo | Inside |
-|----------|-------|--------|
-| Репозиторий | ppxtestarena4/bravo | ppxtestarena4/inside |
-| GitHub Project | #1 | #3 |
-| Логи | `/var/log/bravo/` | `/var/log/inside/` |
-| systemd-сервисы | `bravo-*` | `inside-coder`, `inside-qa` |
-| Рабочая директория | `/home/agent/bravo/` | `/home/agent/inside/` |
-
-Общие ресурсы: VPS, пользователь `agent`, инструменты (Claude Code, Codex CLI, gh CLI).
-
----
-
-## Структура репозитория
+## VPS — детали сервера
 
 ```
-inside/
-├── .github/
-│   ├── ISSUE_TEMPLATE/
-│   │   └── task.md                 # BRD-шаблон для Perplexity
-│   └── workflows/
-│       └── codex-review.yml        # Авто-ревью на push/PR
-├── pipeline/
-│   ├── common.sh                   # Общие функции: GraphQL API, логирование
-│   ├── coder-daemon.sh             # Claude Code — кодер (бесконечный цикл)
-│   ├── qa-daemon.sh                # Codex CLI — QA: ревью + тесты + BRD (бесконечный цикл)
-│   └── install.sh                  # Установщик на VPS
-├── systemd/
-│   ├── inside-coder.service        # Systemd unit для Claude Coder
-│   └── inside-qa.service           # Systemd unit для Codex QA
-├── src/                            # Исходный код (заполняется агентами)
-├── tests/                          # Тесты (заполняются агентами)
-├── CODE.md                         # ← Этот файл
-└── README.md                       # Документация
+IP:       164.68.116.250
+Пользователь: agent
+Домашний каталог: /home/agent/
+Репозиторий: /home/agent/inside/
+Логи:     /var/log/inside/
 ```
 
----
-
-## Команды на VPS
+### Полезные команды на VPS
 
 ```bash
-# Статус агентов Inside
-systemctl status inside-coder inside-qa
+# Статус агентов
+systemctl status inside-coder inside-reviewer inside-tester
 
 # Логи в реальном времени
 journalctl -u inside-coder -f
-journalctl -u inside-qa -f
+journalctl -u inside-reviewer -f
+journalctl -u inside-tester -f
 
 # Файловые логи
 tail -f /var/log/inside/coder.log
-tail -f /var/log/inside/qa.log
+tail -f /var/log/inside/reviewer.log
+tail -f /var/log/inside/tester.log
 
 # Перезапуск
-systemctl restart inside-coder inside-qa
+systemctl restart inside-coder
 
-# Остановить Inside (не затронет Bravo)
-systemctl stop inside-coder inside-qa
+# Остановить всё
+systemctl stop inside-coder inside-reviewer inside-tester
 ```
+
+---
+
+## Клонирование для нового проекта
+
+### 1. Склонировать шаблон
+
+```bash
+git clone https://github.com/ppxtestarena4/inside.git my-new-project
+cd my-new-project
+
+# Обновить origin на новый репозиторий
+git remote set-url origin https://github.com/YOUR_ORG/YOUR_REPO.git
+git push -u origin main
+```
+
+### 2. Создать GitHub Project
+
+1. Создай новый **GitHub Projects v2** для репозитория
+2. Добавь колонки: `Backlog`, `To Do`, `In Progress`, `Review`, `Testing`, `Done`
+3. Запиши Project ID и Field ID (через GraphQL API или UI)
+
+```bash
+# Получить ID проекта
+gh api graphql -f query='{ viewer { projectsV2(first: 10) { nodes { id title } } } }'
+```
+
+### 3. Обновить конфигурацию
+
+В файле `pipeline/common.sh` замени:
+
+```bash
+PIPELINE_REPO="YOUR_ORG/YOUR_REPO"
+PROJECT_ID="YOUR_PROJECT_ID"
+STATUS_FIELD_ID="YOUR_STATUS_FIELD_ID"
+COLUMN_IDS=(...)  # Замени все option IDs
+```
+
+### 4. Запустить установщик на VPS
+
+```bash
+ssh agent@YOUR_VPS_IP
+git clone https://github.com/YOUR_ORG/YOUR_REPO.git
+cd YOUR_REPO
+sudo bash pipeline/install.sh
+```
+
+### 5. Обновить CODE.md
+
+Обнови этот файл для нового проекта: описание, стек, VPS-данные.
+
+---
+
+## Защитные механизмы
+
+1. **Блокировка задачи** — агент назначает issue на себя (`assignee`), другие агенты пропускают назначенные задачи
+2. **Таймаут codex** — 30 мин для Coder, 15 мин для Reviewer и Tester
+3. **Gate-проверки** — Coder: `git status --porcelain` не пуст; Reviewer/Tester: `VERDICT: PASS` в выводе Codex
+4. **Fallback при ошибке** — любая ошибка → лог + комментарий в issue + задача остаётся в колонке
+5. **Логирование** — все действия в `/var/log/inside/<daemon>.log` и systemd journal
 
 ---
 
 ## Соглашения о коде
 
-- Все bash-скрипты: `set -euo pipefail`
+- Все bash-скрипты начинаются с `set -euo pipefail`
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `test:`, `chore:`
-- Ссылки на issue: `Refs: #N`
+- Ссылки на issue в коммитах: `Refs: #N`
 - Комментарии в коде — английские, документация — русская
-- Логи через функцию `log()` из `common.sh`
+- Логи пишутся через функцию `log()` из `common.sh`
 
 ---
 
